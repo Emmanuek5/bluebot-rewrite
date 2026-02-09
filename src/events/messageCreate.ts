@@ -7,6 +7,7 @@ import type { GuildConfig } from '../database/models/GuildConfig.ts';
 import { logModerationAction } from '../services/modLog.ts';
 import { mergeSwearWords } from '../moderation/swearWords.ts';
 import { DEFAULT_ESCALATION } from '../moderation/escalation.ts';
+import { generateAIResponse, isAIConfigured } from '../services/ai.ts';
 
 const WARNING_TTL_MS = 10_000;
 const DEFAULT_STICKY_INTERVAL = 5;
@@ -60,7 +61,9 @@ function isCapsAbuse(content: string, ratio: number, minLength: number) {
 
 async function warnUser(message: Message, reason: string) {
     try {
-        const warning = await message.channel.send({
+        const channel = message.channel;
+        if (!('send' in channel)) return;
+        const warning = await channel.send({
             content: `${message.author}, ${reason}`,
         });
         setTimeout(() => warning.delete().catch(() => {}), WARNING_TTL_MS);
@@ -149,7 +152,9 @@ async function handleSticky(message: Message, config: HydratedDocument<GuildConf
     }
 
     try {
-        const sent = await message.channel.send({ content: sticky.content });
+        const ch = message.channel;
+        if (!('send' in ch)) return;
+        const sent = await ch.send({ content: sticky.content });
         sticky.lastMessageId = sent.id;
         if (!sticky.interval) {
             sticky.interval = interval;
@@ -171,9 +176,23 @@ export default class MessageCreateEvent extends BaseEvent<Events.MessageCreate> 
 
         const config = await ensureGuildConfig(message.guild.id);
 
+        // Skip ignored channels (still handle sticky)
+        if (config.ignoredChannelIds?.includes(message.channel.id)) {
+            await handleSticky(message, config);
+            return;
+        }
+
         const member = message.member;
         const bypassStaff = config.moderation?.bypassStaff ?? true;
+
+        // Bypass via Manage Messages permission
         if (bypassStaff && member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+            await handleSticky(message, config);
+            return;
+        }
+
+        // Bypass via configured mod role
+        if (config.modRoleId && member?.roles.cache.has(config.modRoleId)) {
             await handleSticky(message, config);
             return;
         }
@@ -271,5 +290,45 @@ export default class MessageCreateEvent extends BaseEvent<Events.MessageCreate> 
         }
 
         await handleSticky(message, config);
+        await handleAutoResponder(message, config);
+    }
+}
+
+async function handleAutoResponder(message: Message, config: HydratedDocument<GuildConfig>) {
+    if (!isAIConfigured()) return;
+    if (!config.autoResponders?.length) return;
+
+    const content = message.content.toLowerCase();
+
+    for (const trigger of config.autoResponders as any[]) {
+        if (!content.includes(trigger.keyword.toLowerCase())) continue;
+
+        // Check channel restriction
+        if (trigger.channelIds?.length && !trigger.channelIds.includes(message.channel.id)) continue;
+
+        try {
+            const ch = message.channel;
+            if (!('send' in ch)) return;
+
+            if (trigger.useAI) {
+                const aiResponse = await generateAIResponse({
+                    model: config.ai?.model ?? 'openai/gpt-4o-mini',
+                    systemPrompt: `You are a helpful assistant in a Discord server. Answer the user's question using the following context as your knowledge base. Be concise and helpful.\n\nContext:\n${trigger.response}`,
+                    userMessage: message.content,
+                    maxTokens: config.ai?.maxTokens ?? 1024,
+                });
+
+                if (aiResponse) {
+                    const reply = aiResponse.length > 2000 ? aiResponse.slice(0, 1997) + '...' : aiResponse;
+                    await ch.send({ content: reply, reply: { messageReference: message.id } });
+                }
+            } else {
+                await ch.send({ content: trigger.response, reply: { messageReference: message.id } });
+            }
+
+            break;
+        } catch (error) {
+            console.error('Auto-responder error:', error);
+        }
     }
 }

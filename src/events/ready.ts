@@ -2,6 +2,7 @@ import { BaseEvent } from '../structures/Event.ts';
 import { Events, Client } from 'discord.js';
 import { deployCommands } from '../deploy.ts';
 import { startPollScheduler } from '../services/pollScheduler.ts';
+import { startTempbanScheduler } from '../services/tempbanScheduler.ts';
 
 export default class ReadyEvent extends BaseEvent<Events.ClientReady> {
     constructor() {
@@ -18,5 +19,6 @@ export default class ReadyEvent extends BaseEvent<Events.ClientReady> {
         });
 
         startPollScheduler(client);
+        startTempbanScheduler(client);
     }
 }

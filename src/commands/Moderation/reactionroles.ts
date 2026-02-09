@@ -1,11 +1,15 @@
 import { BaseCommand } from '../../structures/Command.ts';
 import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
-import type { ChatInputCommandInteraction, Client } from 'discord.js';
+import type { ChatInputCommandInteraction, Client, TextBasedChannel } from 'discord.js';
 import ReactionRolePanelModel from '../../database/models/ReactionRolePanel.ts';
 import ReactionRoleDraftModel from '../../database/models/ReactionRoleDraft.ts';
 import { buildReactionRoleBuilderMessage } from '../../services/reactionRoleBuilder.ts';
 
-
+async function resolveChannel(interaction: ChatInputCommandInteraction, channelId: string): Promise<TextBasedChannel | null> {
+    const channel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return null;
+    return channel;
+}
 export default class ReactionRolesCommand extends BaseCommand {
     constructor() {
         super(
